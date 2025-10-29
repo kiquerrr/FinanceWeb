@@ -1,0 +1,18 @@
+# Dependencias del Sistema de Arbitraje P2P
+# Versión 3.0
+
+# Core
+# (Sin dependencias externas para funcionalidad básica)
+
+# Opcional - Para gráficos
+matplotlib>=3.5.0
+
+# Recomendado - Para mejor manejo de fechas
+python-dateutil>=2.8.0
+
+# Notas de instalación:
+# En sistemas Linux/Ubuntu, usa:
+# pip install -r requirements.txt --break-system-packages
+#
+# En Windows:
+# pip install -r requirements.txt

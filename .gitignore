@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv_backend/
+env/
+*.egg-info/
+
+# Base de datos (opcional: comentar si quieres subir la BD de prueba)
+# *.db
+# *.sqlite
+# *.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Entorno
+.env
+*.env
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Backups
+backups/
+*.bak
+
+# Temporales
+tmp/
+temp/
+*.tmp
+
+# Reportes y gráficos generados
+reportes/
+graficos/
