@@ -29,7 +29,7 @@ class Ciclo(BaseModel):
     estado: str
 
 class IniciarCicloRequest(BaseModel):
-    capital_inicial: float = Field(..., gt=0)
+    capital_inicial: Optional[float] = Field(None, ge=0)
     meta_ganancia: Optional[float] = Field(None, gt=0)
 
 class FinalizarCicloRequest(BaseModel):
@@ -245,12 +245,27 @@ async def iniciar_nuevo_ciclo(datos: IniciarCicloRequest):
             if cursor.fetchone():
                 raise HTTPException(status_code=400, detail="Ya existe un ciclo activo")
             
+            # Calcular capital inicial desde bóveda si no se proporciona
+            if datos.capital_inicial is None or datos.capital_inicial == 0:
+                # Buscar el último ciclo cerrado para obtener su bóveda
+                cursor.execute("""
+                    SELECT SUM(cantidad * precio_promedio) as capital_boveda
+                    FROM boveda_ciclo b
+                    JOIN ciclos c ON b.ciclo_id = c.id
+                    WHERE c.estado = 'cerrado'
+                    ORDER BY c.id DESC LIMIT 1
+                """)
+                boveda_anterior = cursor.fetchone()
+                capital_inicial = boveda_anterior['capital_boveda'] if boveda_anterior and boveda_anterior['capital_boveda'] else 0
+            else:
+                capital_inicial = datos.capital_inicial
+            
             # Crear nuevo ciclo
             fecha = datetime.now()
             cursor.execute("""
-                INSERT INTO ciclos (fecha_inicio, inversion_inicial, estado)
-                VALUES (?, ?, ?)
-            """, (fecha, datos.capital_inicial, 'activo'))
+                INSERT INTO ciclos (fecha_inicio, inversion_inicial, estado, dias_planificados, fecha_fin_estimada)
+                VALUES (?, ?, ?, ?, ?)
+            """, (fecha, capital_inicial, 'activo', 30, fecha.date()))
             
             ciclo_id = cursor.lastrowid
             
@@ -262,8 +277,8 @@ async def iniciar_nuevo_ciclo(datos: IniciarCicloRequest):
                 "message": "Ciclo iniciado correctamente",
                 "ciclo_id": ciclo_id,
                 "numero": numero,
-                "capital_inicial": datos.capital_inicial,
-                "fecha_inicio": fecha.date()
+                "capital_inicial": capital_inicial,
+                "fecha_inicio": str(fecha.date())
             }
     except HTTPException:
         raise

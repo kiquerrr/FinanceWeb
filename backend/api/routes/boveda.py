@@ -27,8 +27,8 @@ class ResumenBoveda(BaseModel):
 
 class AgregarCapitalRequest(BaseModel):
     simbolo: str
-    cantidad: float = Field(..., gt=0)
-    precio_usd: float = Field(..., gt=0)
+    monto_usd: float = Field(..., gt=0, description="Monto en USD invertido")
+    precio_unitario: float = Field(..., gt=0, description="Precio por unidad de cripto")
 
 class RetirarCapitalRequest(BaseModel):
     simbolo: str
@@ -80,81 +80,99 @@ async def get_resumen_boveda():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
-@router.get("/cripto/{simbolo}", response_model=Criptomoneda)
-async def get_info_cripto(simbolo: str):
-    try:
-        with db.get_cursor(commit=False) as cursor:
-            cursor.execute("""
-                SELECT c.simbolo, c.nombre, b.cantidad, b.precio_promedio,
-                       (b.cantidad * b.precio_promedio) as valor_total
-                FROM boveda_ciclo b
-                JOIN criptomonedas c ON b.cripto_id = c.id
-                JOIN ciclos cy ON b.ciclo_id = cy.id
-                WHERE cy.estado = 'activo' AND c.simbolo = ?
-            """, (simbolo.upper(),))
-            row = cursor.fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="Criptomoneda no encontrada")
-            cursor.execute("""
-                SELECT SUM(b.cantidad * b.precio_promedio) as total
-                FROM boveda_ciclo b JOIN ciclos cy ON b.ciclo_id = cy.id
-                WHERE cy.estado = 'activo'
-            """)
-            capital_total = cursor.fetchone()['total']
-            return Criptomoneda(
-                simbolo=row['simbolo'], nombre=row['nombre'],
-                cantidad=row['cantidad'], valor_usd=row['valor_total'],
-                porcentaje_cartera=round((row['valor_total'] / capital_total * 100), 2)
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-
 @router.post("/agregar-capital")
 async def agregar_capital(datos: AgregarCapitalRequest):
+    """
+    Agrega capital a la bóveda.
+    
+    Lógica correcta:
+    - Usuario invierte X USD
+    - A un precio Y por cripto
+    - Cantidad = X / Y
+    """
     try:
         with db.get_cursor(commit=True) as cursor:
+            # Buscar ciclo activo (o crear uno)
             cursor.execute("SELECT id FROM ciclos WHERE estado = 'activo' LIMIT 1")
             ciclo = cursor.fetchone()
-            if not ciclo:
-                raise HTTPException(status_code=400, detail="No hay ciclo activo")
             
-            cursor.execute("SELECT id FROM criptomonedas WHERE simbolo = ?", (datos.simbolo.upper(),))
+            if not ciclo:
+                # Crear ciclo automáticamente
+                cursor.execute("""
+                    INSERT INTO ciclos (fecha_inicio, inversion_inicial, estado, dias_planificados, fecha_fin_estimada)
+                    VALUES (datetime('now'), 0, 'activo', 30, date('now', '+30 days'))
+                """)
+                ciclo_id = cursor.lastrowid
+            else:
+                ciclo_id = ciclo['id']
+
+            # Verificar cripto
+            cursor.execute("SELECT id, nombre FROM criptomonedas WHERE simbolo = ?", (datos.simbolo.upper(),))
             cripto = cursor.fetchone()
             if not cripto:
-                raise HTTPException(status_code=404, detail="Criptomoneda no encontrada")
-            
+                raise HTTPException(status_code=404, detail=f"Criptomoneda {datos.simbolo} no encontrada")
+
+            # CALCULAR CANTIDAD (fórmula correcta)
+            cantidad_cripto = datos.monto_usd / datos.precio_unitario
+
+            # Verificar si ya existe en bóveda
             cursor.execute("""
                 SELECT id, cantidad, precio_promedio FROM boveda_ciclo
                 WHERE ciclo_id = ? AND cripto_id = ?
-            """, (ciclo['id'], cripto['id']))
+            """, (ciclo_id, cripto['id']))
             boveda = cursor.fetchone()
-            
+
             if boveda:
-                cantidad_nueva = boveda['cantidad'] + datos.cantidad
-                precio_promedio_nuevo = (
-                    (boveda['cantidad'] * boveda['precio_promedio']) + 
-                    (datos.cantidad * datos.precio_usd)
-                ) / cantidad_nueva
+                # Ya existe: calcular promedio ponderado
+                cantidad_anterior = boveda['cantidad']
+                precio_anterior = boveda['precio_promedio']
+                
+                # Valor anterior
+                valor_anterior = cantidad_anterior * precio_anterior
+                
+                # Valor nuevo
+                valor_nuevo = cantidad_cripto * datos.precio_unitario
+                
+                # Cantidad total
+                cantidad_total = cantidad_anterior + cantidad_cripto
+                
+                # Precio promedio ponderado
+                precio_promedio = (valor_anterior + valor_nuevo) / cantidad_total
+                
                 cursor.execute("""
                     UPDATE boveda_ciclo SET cantidad = ?, precio_promedio = ?
                     WHERE id = ?
-                """, (cantidad_nueva, precio_promedio_nuevo, boveda['id']))
-                mensaje = f"Actualizado: ahora tienes {cantidad_nueva} {datos.simbolo}"
+                """, (cantidad_total, precio_promedio, boveda['id']))
+                
+                mensaje = f"Actualizado: ahora tienes {cantidad_total:.8f} {datos.simbolo}"
             else:
+                # No existe: insertar nuevo
                 cursor.execute("""
                     INSERT INTO boveda_ciclo (ciclo_id, cripto_id, cantidad, precio_promedio)
                     VALUES (?, ?, ?, ?)
-                """, (ciclo['id'], cripto['id'], datos.cantidad, datos.precio_usd))
-                mensaje = f"Agregado: {datos.cantidad} {datos.simbolo}"
+                """, (ciclo_id, cripto['id'], cantidad_cripto, datos.precio_unitario))
+                
+                mensaje = f"Agregado: {cantidad_cripto:.8f} {datos.simbolo}"
+
+            # Actualizar inversión del ciclo
+            cursor.execute("""
+                SELECT SUM(cantidad * precio_promedio) as total
+                FROM boveda_ciclo WHERE ciclo_id = ?
+            """, (ciclo_id,))
+            total = cursor.fetchone()['total'] or 0
             
+            cursor.execute("""
+                UPDATE ciclos SET inversion_inicial = ? WHERE id = ?
+            """, (total, ciclo_id))
+
             return {
                 "success": True,
                 "message": mensaje,
                 "simbolo": datos.simbolo,
-                "cantidad_agregada": datos.cantidad,
-                "valor_total_agregado": round(datos.cantidad * datos.precio_usd, 2)
+                "monto_invertido_usd": datos.monto_usd,
+                "precio_unitario": datos.precio_unitario,
+                "cantidad_obtenida": round(cantidad_cripto, 8),
+                "valor_total_usd": round(cantidad_cripto * datos.precio_unitario, 2)
             }
     except HTTPException:
         raise
@@ -169,7 +187,7 @@ async def retirar_capital(datos: RetirarCapitalRequest):
             ciclo = cursor.fetchone()
             if not ciclo:
                 raise HTTPException(status_code=400, detail="No hay ciclo activo")
-            
+
             cursor.execute("""
                 SELECT b.id, b.cantidad, b.precio_promedio
                 FROM boveda_ciclo b
@@ -177,22 +195,22 @@ async def retirar_capital(datos: RetirarCapitalRequest):
                 WHERE b.ciclo_id = ? AND c.simbolo = ?
             """, (ciclo['id'], datos.simbolo.upper()))
             boveda = cursor.fetchone()
-            
+
             if not boveda:
                 raise HTTPException(status_code=404, detail="Cripto no encontrada en bóveda")
             if boveda['cantidad'] < datos.cantidad:
-                raise HTTPException(status_code=400, detail=f"Insuficiente. Disponible: {boveda['cantidad']}")
-            
+                raise HTTPException(status_code=400, detail=f"Insuficiente. Disponible: {boveda['cantidad']:.8f}")
+
             cantidad_nueva = boveda['cantidad'] - datos.cantidad
-            
+
             if cantidad_nueva <= 0:
                 cursor.execute("DELETE FROM boveda_ciclo WHERE id = ?", (boveda['id'],))
                 mensaje = f"Retirado todo el {datos.simbolo}"
             else:
                 cursor.execute("UPDATE boveda_ciclo SET cantidad = ? WHERE id = ?",
                              (cantidad_nueva, boveda['id']))
-                mensaje = f"Retirado: {datos.cantidad}. Quedan: {cantidad_nueva}"
-            
+                mensaje = f"Retirado: {datos.cantidad:.8f}. Quedan: {cantidad_nueva:.8f}"
+
             return {
                 "success": True,
                 "message": mensaje,
@@ -205,7 +223,3 @@ async def retirar_capital(datos: RetirarCapitalRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-
-@router.get("/test")
-async def test_boveda():
-    return {"message": "Bóveda OK", "timestamp": datetime.now().isoformat()}

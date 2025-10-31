@@ -1,0 +1,36 @@
+REEMPLAZAR EN BOVEDA.TSX:
+
+El formulario "Agregar Capital" debe ser:
+
+<div>
+  <label>Monto en USD</label>
+  <input
+    type="number"
+    step="0.01"
+    value={montoUsd}
+    onChange={(e) => setMontoUsd(e.target.value)}
+    placeholder="100.00"
+  />
+  <p className="text-xs text-gray-500">Cuánto dinero invertiste</p>
+</div>
+
+<div>
+  <label>Precio por unidad (USD)</label>
+  <input
+    type="number"
+    step="0.00000001"
+    value={precioUnitario}
+    onChange={(e) => setPrecioUnitario(e.target.value)}
+    placeholder="1.050 o 120000"
+  />
+  <p className="text-xs text-gray-500">
+    Precio del cripto al momento de compra
+  </p>
+</div>
+
+Y en el submit:
+await agregarCapital({
+  simbolo: simbolo.toUpperCase(),
+  monto_usd: parseFloat(montoUsd),
+  precio_unitario: parseFloat(precioUnitario)
+});
