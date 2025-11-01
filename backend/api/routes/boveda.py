@@ -13,7 +13,9 @@ from core.db_manager import db
 
 router = APIRouter()
 
+# --- CAMBIO REALIZADO AQUÍ ---
 class Criptomoneda(BaseModel):
+    id: int
     simbolo: str
     nombre: str
     cantidad: float
@@ -39,8 +41,9 @@ class RetirarCapitalRequest(BaseModel):
 async def get_inventario():
     try:
         with db.get_cursor(commit=False) as cursor:
+            # --- CAMBIO REALIZADO AQUÍ (EN EL SELECT) ---
             cursor.execute("""
-                SELECT c.simbolo, c.nombre, b.cantidad, b.precio_promedio,
+                SELECT c.id, c.simbolo, c.nombre, b.cantidad, b.precio_promedio,
                        (b.cantidad * b.precio_promedio) as valor_total
                 FROM boveda_ciclo b
                 JOIN criptomonedas c ON b.cripto_id = c.id
@@ -51,11 +54,17 @@ async def get_inventario():
             rows = cursor.fetchall()
             if not rows:
                 return []
+            
             capital_total = sum(row['valor_total'] for row in rows)
+            
+            # --- CAMBIO REALIZADO AQUÍ (EN EL RETURN) ---
             return [Criptomoneda(
-                simbolo=row['simbolo'], nombre=row['nombre'],
-                cantidad=row['cantidad'], valor_usd=row['valor_total'],
-                porcentaje_cartera=round((row['valor_total'] / capital_total * 100), 2)
+                id=row['id'], 
+                simbolo=row['simbolo'], 
+                nombre=row['nombre'],
+                cantidad=row['cantidad'], 
+                valor_usd=row['valor_total'],
+                porcentaje_cartera=round((row['valor_total'] / capital_total * 100), 2) if capital_total > 0 else 0
             ) for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
@@ -203,12 +212,12 @@ async def retirar_capital(datos: RetirarCapitalRequest):
 
             cantidad_nueva = boveda['cantidad'] - datos.cantidad
 
-            if cantidad_nueva <= 0:
+            if cantidad_nueva <= 1e-8: # Usar una pequeña tolerancia para evitar problemas con floats
                 cursor.execute("DELETE FROM boveda_ciclo WHERE id = ?", (boveda['id'],))
                 mensaje = f"Retirado todo el {datos.simbolo}"
             else:
                 cursor.execute("UPDATE boveda_ciclo SET cantidad = ? WHERE id = ?",
-                             (cantidad_nueva, boveda['id']))
+                               (cantidad_nueva, boveda['id']))
                 mensaje = f"Retirado: {datos.cantidad:.8f}. Quedan: {cantidad_nueva:.8f}"
 
             return {

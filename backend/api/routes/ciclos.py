@@ -330,3 +330,65 @@ async def finalizar_ciclo_actual(datos: FinalizarCicloRequest):
 @router.get("/test")
 async def test_ciclos():
     return {"message": "Ciclos funcionando", "timestamp": datetime.now().isoformat()}
+
+class TransferirCapitalRequest(BaseModel):
+    cripto_id: int = Field(..., description="ID de la criptomoneda a transferir")
+    cantidad: float = Field(..., gt=0, description="Cantidad a transferir (0 = todo)")
+    transferir_todo: bool = Field(False, description="Transferir toda la cantidad disponible")
+
+@router.post("/transferir-capital")
+async def transferir_capital_a_ciclo(datos: TransferirCapitalRequest):
+    """Transfiere capital de la bóveda al ciclo activo"""
+    try:
+        with db.get_cursor(commit=True) as cursor:
+            # Verificar ciclo activo
+            cursor.execute("SELECT id, inversion_inicial FROM ciclos WHERE estado = 'activo' LIMIT 1")
+            ciclo = cursor.fetchone()
+            if not ciclo:
+                raise HTTPException(status_code=400, detail="No hay ciclo activo")
+            
+            ciclo_id = ciclo['id']
+            
+            # Verificar que la cripto existe en bóveda
+            cursor.execute("""
+                SELECT b.cantidad, b.precio_promedio, c.nombre, c.simbolo
+                FROM boveda_ciclo b
+                JOIN criptomonedas c ON b.cripto_id = c.id
+                WHERE b.ciclo_id = ? AND b.cripto_id = ?
+            """, (ciclo_id, datos.cripto_id))
+            
+            boveda = cursor.fetchone()
+            if not boveda:
+                raise HTTPException(status_code=404, detail="Criptomoneda no encontrada en bóveda")
+            
+            # Determinar cantidad a transferir
+            cantidad_transferir = boveda['cantidad'] if datos.transferir_todo else datos.cantidad
+            
+            if cantidad_transferir > boveda['cantidad']:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Cantidad insuficiente. Disponible: {boveda['cantidad']}"
+                )
+            
+            # Calcular valor en USD
+            valor_usd = cantidad_transferir * boveda['precio_promedio']
+            
+            # Actualizar capital del ciclo
+            nuevo_capital = ciclo['inversion_inicial'] + valor_usd
+            cursor.execute("""
+                UPDATE ciclos SET inversion_inicial = ? WHERE id = ?
+            """, (nuevo_capital, ciclo_id))
+            
+            return {
+                "success": True,
+                "message": f"Transferido {cantidad_transferir} {boveda['simbolo']} al ciclo",
+                "cripto": boveda['simbolo'],
+                "cantidad_transferida": cantidad_transferir,
+                "valor_usd": round(valor_usd, 2),
+                "nuevo_capital_ciclo": round(nuevo_capital, 2)
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
